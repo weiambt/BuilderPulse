@@ -110,33 +110,36 @@ jobs:
           )
 
           print(f"doc_resp status: {doc_resp.status_code}")
-          print(f"doc_resp text: {doc_resp.text[:1000]}")
+          print(f"doc_resp text: {doc_resp.text[:500]}")
 
-          # 尝试解析 JSON
-          try:
-              doc_data = doc_resp.json()
-          except Exception as e:
-              print(f"JSON 解析失败: {e}")
-              print(f"response text: {doc_resp.text}")
-              exit(1)
-
+          doc_data = doc_resp.json()
           doc_token = doc_data.get('data', {}).get('document', {}).get('document_id', '')
 
           if not doc_token:
               print(f"文档创建失败: {doc_data}")
               exit(1)
 
+          print(f"文档创建成功, token: {doc_token}")
+
           # 获取文档的 blocks
           blocks_resp = requests.get(
               f'https://open.feishu.cn/open-apis/docx/v1/documents/{doc_token}/blocks',
               headers=headers_lark
           )
+          print(f"blocks_resp status: {blocks_resp.status_code}")
+          print(f"blocks_resp text: {blocks_resp.text[:500]}")
+
           blocks_data = blocks_resp.json()
-          root_block_id = blocks_data.get('data', {}).get('items', [{}])[0].get('block_id', '') if blocks_data.get('data', {}).get('items') else ''
+          items = blocks_data.get('data', {}).get('items', [])
+          print(f"blocks count: {len(items)}")
+
+          root_block_id = items[0].get('block_id', '') if items else ''
 
           if not root_block_id:
               print(f"获取根 block 失败: {blocks_data}")
               exit(1)
+
+          print(f"root_block_id: {root_block_id}")
 
           # 构建文档内容块
           blocks = []
@@ -180,21 +183,31 @@ jobs:
                       'style': {}
                   }
               })
+              # 限制内容长度避免超时
+              content_to_insert = change['content'][:8000] if len(change['content']) > 8000 else change['content']
               blocks.append({
                   'block_type': 12,
                   'code': {
-                      'elements': [{'type': 'text_run', 'text_run': {'content': change['content'][:10000]}}],
+                      'elements': [{'type': 'text_run', 'text_run': {'content': content_to_insert}}],
                       'style': {'language': 1}
                   }
               })
               blocks.append({'block_type': 1, 'text': {'elements': [{'type': 'text_run', 'text_run': {'content': ''}}], 'style': {}})
 
+          print(f"准备插入 {len(blocks)} 个 blocks")
+
           # 插入内容块
+          insert_url = f'https://open.feishu.cn/open-apis/docx/v1/documents/{doc_token}/blocks/{root_block_id}/children'
+          print(f"insert_url: {insert_url}")
+
           insert_resp = requests.patch(
-              f'https://open.feishu.cn/open-apis/docx/v1/documents/{doc_token}/blocks/{root_block_id}/children',
+              insert_url,
               headers=headers_lark,
               json={'children': blocks, 'index': -1}
           )
+
+          print(f"insert_resp status: {insert_resp.status_code}")
+          print(f"insert_resp text: {insert_resp.text[:1000]}")
 
           insert_data = insert_resp.json()
           if insert_data.get('code') != 0:

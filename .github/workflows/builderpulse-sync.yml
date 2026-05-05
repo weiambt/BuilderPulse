@@ -50,7 +50,7 @@ jobs:
           lark_app_id = os.environ.get('LARK_APP_ID', '')
           lark_app_secret = os.environ.get('LARK_APP_SECRET', '')
 
-          headers = {
+          headers_github = {
               'Authorization': f'token {github_token}',
               'Accept': 'application/vnd.github.v3+json'
           }
@@ -58,14 +58,14 @@ jobs:
           # 获取根目录文件列表
           resp = requests.get(
               'https://api.github.com/repos/BuilderPulse/BuilderPulse/contents/',
-              headers=headers
+              headers=headers_github
           )
           files = resp.json() if isinstance(resp.json(), list) else []
 
           changes = []
           for f in files:
               if f.get('type') == 'file':
-                  file_resp = requests.get(f['url'], headers=headers)
+                  file_resp = requests.get(f['url'], headers=headers_github)
                   file_data = file_resp.json()
                   if 'content' in file_data:
                       content = base64.b64decode(file_data['content']).decode('utf-8', errors='ignore')
@@ -74,13 +74,13 @@ jobs:
                           'path': f['path'],
                           'sha': f['sha'],
                           'size': f['size'],
-                          'content_preview': content[:500] if len(content) > 500 else content
+                          'content': content
                       })
 
           # 获取最新 commit SHA
           commit_resp = requests.get(
               'https://api.github.com/repos/BuilderPulse/BuilderPulse/commits?per_page=1',
-              headers=headers
+              headers=headers_github
           )
           commits = commit_resp.json()
           latest_sha = commits[0]['sha'] if commits else ''
@@ -92,79 +92,105 @@ jobs:
               json={'app_id': lark_app_id, 'app_secret': lark_app_secret}
           )
           lark_token = lark_token_resp.json().get('tenant_access_token', '')
+          headers_lark = {'Authorization': f'Bearer {lark_token}', 'Content-Type': 'application/json'}
 
-          # 创建飞书文档 (使用新 docx API)
+          # 创建飞书文档
           doc_title = f"BuilderPulse 变更报告 - {datetime.now().strftime('%Y-%m-%d')}"
           doc_resp = requests.post(
               'https://open.feishu.cn/open-apis/docx/v1/documents',
-              headers={'Authorization': f'Bearer {lark_token}', 'Content-Type': 'application/json'},
+              headers=headers_lark,
               json={'title': doc_title}
           )
           doc_data = doc_resp.json()
           doc_token = doc_data.get('data', {}).get('document', {}).get('document_id', '')
 
-          if doc_token:
-              # 构建文档内容
-              blocks = []
-              blocks.append({
-                  'block_type': 2,  # heading1
-                  'heading1': {
-                      'elements': [{'type': 'text_run', 'text_run': {'content': f'BuilderPulse 变更报告 - {datetime.now().strftime("%Y-%m-%d")}'}}],
-                      'style': {}
-                  }
-              })
-              blocks.append({
-                  'block_type': 1,  # text
-                  'text': {
-                      'elements': [{'type': 'text_run', 'text_run': {'content': f'检测到变更！共 {len(changes)} 个文件。\n最新 Commit: {latest_sha_short}'}}],
-                      'style': {}
-                  }
-              })
-              blocks.append({
-                  'block_type': 3,  # heading2
-                  'heading2': {
-                      'elements': [{'type': 'text_run', 'text_run': {'content': '文件变更列表'}}],
-                      'style': {}
-                  }
-              })
-
-              for change in changes:
-                  blocks.append({
-                      'block_type': 4,  # heading3
-                      'heading3': {
-                          'elements': [{'type': 'text_run', 'text_run': {'content': change['name']}}],
-                          'style': {}
-                      }
-                  })
-                  blocks.append({
-                      'block_type': 1,
-                      'text': {
-                          'elements': [{'type': 'text_run', 'text_run': {'content': f"路径: {change['path']} | 大小: {change['size']} bytes"}}],
-                          'style': {}
-                      }
-                  })
-                  if change['content_preview']:
-                      blocks.append({
-                          'block_type': 1,
-                          'text': {
-                              'elements': [{'type': 'text_run', 'text_run': {'content': change['content_preview']}}],
-                              'style': {}
-                          }
-                      })
-
-              # 插入文档内容块
-              if blocks:
-                  requests.patch(
-                      f'https://open.feishu.cn/open-apis/docx/v1/documents/{doc_token}/blocks/{doc_token}/children',
-                      headers={'Authorization': f'Bearer {lark_token}', 'Content-Type': 'application/json'},
-                      json={'children': blocks, 'index': -1}
-                  )
-
-              print(f"文档已创建: https://bytedance.feishu.cn/docx/{doc_token}")
-              print(f"FILES_COUNT={len(changes)}")
-              print(f"DOC_TOKEN={doc_token}")
-          else:
+          if not doc_token:
               print(f"文档创建失败: {doc_data}")
+              exit(1)
+
+          # 获取文档的 blocks (找到根 block_id)
+          blocks_resp = requests.get(
+              f'https://open.feishu.cn/open-apis/docx/v1/documents/{doc_token}/blocks',
+              headers=headers_lark
+          )
+          blocks_data = blocks_resp.json()
+          root_block_id = blocks_data.get('data', {}).get('items', [{}])[0].get('block_id', '') if blocks_data.get('data', {}).get('items') else ''
+
+          if not root_block_id:
+              print(f"获取根 block 失败: {blocks_data}")
+              exit(1)
+
+          # 构建文档内容块
+          blocks = []
+
+          # 标题
+          blocks.append({
+              'block_type': 2,
+              'heading1': {
+                  'elements': [{'type': 'text_run', 'text_run': {'content': f'BuilderPulse 变更报告 - {datetime.now().strftime("%Y-%m-%d")}'}}],
+                  'style': {}
+              }
+          })
+
+          # 摘要
+          blocks.append({
+              'block_type': 1,
+              'text': {
+                  'elements': [{'type': 'text_run', 'text_run': {'content': f'检测到变更！共 {len(changes)} 个文件。\n最新 Commit: {latest_sha_short}'}}],
+                  'style': {}
+              }
+          })
+
+          # 文件变更列表标题
+          blocks.append({
+              'block_type': 3,
+              'heading2': {
+                  'elements': [{'type': 'text_run', 'text_run': {'content': '文件变更列表'}}],
+                  'style': {}
+              }
+          })
+
+          # 每个文件详情
+          for change in changes:
+              blocks.append({
+                  'block_type': 4,
+                  'heading3': {
+                      'elements': [{'type': 'text_run', 'text_run': {'content': change['name']}}],
+                      'style': {}
+                  }
+              })
+              blocks.append({
+                  'block_type': 1,
+                  'text': {
+                      'elements': [{'type': 'text_run', 'text_run': {'content': f"路径: {change['path']} | 大小: {change['size']} bytes"}}],
+                      'style': {}
+                  }
+              })
+              # 文件完整内容 (不做截断)
+              blocks.append({
+                  'block_type': 12,  # code block
+                  'code': {
+                      'elements': [{'type': 'text_run', 'text_run': {'content': change['content']}}],
+                      'style': {'language': 1}  # 1=plain text
+                  }
+              })
+              blocks.append({'block_type': 1, 'text': {'elements': [{'type': 'text_run', 'text_run': {'content': ''}}], 'style': {}}})
+
+          # 插入内容块到文档
+          insert_resp = requests.patch(
+              f'https://open.feishu.cn/open-apis/docx/v1/documents/{doc_token}/blocks/{root_block_id}/children',
+              headers=headers_lark,
+              json={'children': blocks, 'index': -1}
+          )
+          insert_data = insert_resp.json()
+
+          if insert_data.get('code') != 0:
+              print(f"插入内容失败: {insert_data}")
+              exit(1)
+
+          print(f"文档已创建: https://bytedance.feishu.cn/docx/{doc_token}")
+          print(f"FILES_COUNT={len(changes)}")
+          print(f"DOC_TOKEN={doc_token}")
           PYEOF
 
       - name: No changes detected

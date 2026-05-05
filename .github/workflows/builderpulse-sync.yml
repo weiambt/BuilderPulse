@@ -93,36 +93,72 @@ jobs:
           )
           lark_token = lark_token_resp.json().get('tenant_access_token', '')
 
-          # 创建飞书文档
+          # 创建飞书文档 (使用新 docx API)
           doc_title = f"BuilderPulse 变更报告 - {datetime.now().strftime('%Y-%m-%d')}"
           doc_resp = requests.post(
-              'https://open.feishu.cn/open-apis/doc/v2/create',
+              'https://open.feishu.cn/open-apis/docx/v1/documents',
               headers={'Authorization': f'Bearer {lark_token}', 'Content-Type': 'application/json'},
               json={'title': doc_title}
           )
           doc_data = doc_resp.json()
-          doc_token = doc_data.get('data', {}).get('doc', {}).get('token', '')
+          doc_token = doc_data.get('data', {}).get('document', {}).get('document_id', '')
 
           if doc_token:
               # 构建文档内容
-              elements = []
-              elements.append({'tag': 'h1', 'text': f'BuilderPulse 变更报告 - {datetime.now().strftime("%Y-%m-%d")}'})
-              elements.append({'tag': 'text', 'text': f'检测到变更！共 {len(changes)} 个文件。\n最新 Commit: `{latest_sha_short}`'})
-              elements.append({'tag': 'hr'})
-              elements.append({'tag': 'h2', 'text': '文件变更列表'})
+              blocks = []
+              blocks.append({
+                  'block_type': 2,  # heading1
+                  'heading1': {
+                      'elements': [{'type': 'text_run', 'text_run': {'content': f'BuilderPulse 变更报告 - {datetime.now().strftime("%Y-%m-%d")}'}}],
+                      'style': {}
+                  }
+              })
+              blocks.append({
+                  'block_type': 1,  # text
+                  'text': {
+                      'elements': [{'type': 'text_run', 'text_run': {'content': f'检测到变更！共 {len(changes)} 个文件。\n最新 Commit: {latest_sha_short}'}}],
+                      'style': {}
+                  }
+              })
+              blocks.append({
+                  'block_type': 3,  # heading2
+                  'heading2': {
+                      'elements': [{'type': 'text_run', 'text_run': {'content': '文件变更列表'}}],
+                      'style': {}
+                  }
+              })
 
               for change in changes:
-                  elements.append({'tag': 'h3', 'text': change['name']})
-                  elements.append({'tag': 'text', 'text': f"路径: {change['path']} | 大小: {change['size']} bytes"})
+                  blocks.append({
+                      'block_type': 4,  # heading3
+                      'heading3': {
+                          'elements': [{'type': 'text_run', 'text_run': {'content': change['name']}}],
+                          'style': {}
+                      }
+                  })
+                  blocks.append({
+                      'block_type': 1,
+                      'text': {
+                          'elements': [{'type': 'text_run', 'text_run': {'content': f"路径: {change['path']} | 大小: {change['size']} bytes"}}],
+                          'style': {}
+                      }
+                  })
                   if change['content_preview']:
-                      elements.append({'tag': 'code', 'text': change['content_preview']})
-                  elements.append({'tag': 'br'})
+                      blocks.append({
+                          'block_type': 1,
+                          'text': {
+                              'elements': [{'type': 'text_run', 'text_run': {'content': change['content_preview']}}],
+                              'style': {}
+                          }
+                      })
 
-              requests.put(
-                  f'https://open.feishu.cn/open-apis/doc/v2/{doc_token}/content',
-                  headers={'Authorization': f'Bearer {lark_token}', 'Content-Type': 'application/json'},
-                  json={'content': elements}
-              )
+              # 插入文档内容块
+              if blocks:
+                  requests.patch(
+                      f'https://open.feishu.cn/open-apis/docx/v1/documents/{doc_token}/blocks/{doc_token}/children',
+                      headers={'Authorization': f'Bearer {lark_token}', 'Content-Type': 'application/json'},
+                      json={'children': blocks, 'index': -1}
+                  )
 
               print(f"文档已创建: https://bytedance.feishu.cn/docx/{doc_token}")
               print(f"FILES_COUNT={len(changes)}")

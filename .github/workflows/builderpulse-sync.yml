@@ -42,9 +42,14 @@ jobs:
 
           python3 << 'PYEOF'
           import os
+          import sys
           import base64
+          import json
           import requests
           from datetime import datetime
+
+          def log(msg):
+              print(f"[DEBUG] {msg}", flush=True)
 
           github_token = os.environ.get('GITHUB_TOKEN', '')
           lark_app_id = os.environ.get('LARK_APP_ID', '')
@@ -55,11 +60,12 @@ jobs:
               'Accept': 'application/vnd.github.v3+json'
           }
 
-          # 获取根目录文件列表
+          log("获取根目录文件列表")
           resp = requests.get(
               'https://api.github.com/repos/BuilderPulse/BuilderPulse/contents/',
               headers=headers_github
           )
+          log(f"resp status: {resp.status_code}, text: {resp.text[:200]}")
           files = resp.json() if isinstance(resp.json(), list) else []
 
           changes = []
@@ -77,7 +83,8 @@ jobs:
                           'content': content
                       })
 
-          # 获取最新 commit SHA
+          log(f"获取到 {len(changes)} 个文件变更")
+
           commit_resp = requests.get(
               'https://api.github.com/repos/BuilderPulse/BuilderPulse/commits?per_page=1',
               headers=headers_github
@@ -86,22 +93,29 @@ jobs:
           latest_sha = commits[0]['sha'] if commits else ''
           latest_sha_short = latest_sha[:8]
 
-          print(f"获取到 {len(changes)} 个文件变更")
-
-          # 获取 Lark token
+          log("获取 Lark token")
           lark_token_resp = requests.post(
               'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal',
               json={'app_id': lark_app_id, 'app_secret': lark_app_secret}
           )
-          lark_token = lark_token_resp.json().get('tenant_access_token', '')
+          log(f"lark_token_resp status: {lark_token_resp.status_code}, text: {lark_token_resp.text[:500]}")
+
+          # 手动解析 JSON
+          try:
+              lark_token_data = json.loads(lark_token_resp.text)
+          except json.JSONDecodeError as e:
+              log(f"Lark token JSON 解析失败: {e}, text: {lark_token_resp.text}")
+              sys.exit(1)
+
+          lark_token = lark_token_data.get('tenant_access_token', '')
 
           if not lark_token:
-              print(f"获取 Lark token 失败: {lark_token_resp.text}")
-              exit(1)
+              log(f"获取 Lark token 失败: {lark_token_data}")
+              sys.exit(1)
 
           headers_lark = {'Authorization': f'Bearer {lark_token}', 'Content-Type': 'application/json'}
 
-          # 创建飞书文档
+          log("创建飞书文档")
           doc_title = f"BuilderPulse 变更报告 - {datetime.now().strftime('%Y-%m-%d')}"
           doc_resp = requests.post(
               'https://open.feishu.cn/open-apis/docx/v1/documents',
@@ -109,39 +123,46 @@ jobs:
               json={'title': doc_title}
           )
 
-          print(f"doc_resp status: {doc_resp.status_code}")
-          print(f"doc_resp text: {doc_resp.text[:500]}")
+          log(f"doc_resp status: {doc_resp.status_code}, text: {doc_resp.text[:500]}")
 
-          doc_data = doc_resp.json()
+          try:
+              doc_data = json.loads(doc_resp.text)
+          except json.JSONDecodeError as e:
+              log(f"doc JSON 解析失败: {e}, text: {doc_resp.text}")
+              sys.exit(1)
+
           doc_token = doc_data.get('data', {}).get('document', {}).get('document_id', '')
 
           if not doc_token:
-              print(f"文档创建失败: {doc_data}")
-              exit(1)
+              log(f"文档创建失败: {doc_data}")
+              sys.exit(1)
 
-          print(f"文档创建成功, token: {doc_token}")
+          log(f"文档创建成功, token: {doc_token}")
 
-          # 获取文档的 blocks
+          log("获取文档 blocks")
           blocks_resp = requests.get(
               f'https://open.feishu.cn/open-apis/docx/v1/documents/{doc_token}/blocks',
               headers=headers_lark
           )
-          print(f"blocks_resp status: {blocks_resp.status_code}")
-          print(f"blocks_resp text: {blocks_resp.text[:500]}")
+          log(f"blocks_resp status: {blocks_resp.status_code}, text: {blocks_resp.text[:500]}")
 
-          blocks_data = blocks_resp.json()
+          try:
+              blocks_data = json.loads(blocks_resp.text)
+          except json.JSONDecodeError as e:
+              log(f"blocks JSON 解析失败: {e}, text: {blocks_resp.text}")
+              sys.exit(1)
+
           items = blocks_data.get('data', {}).get('items', [])
-          print(f"blocks count: {len(items)}")
+          log(f"blocks count: {len(items)}")
 
           root_block_id = items[0].get('block_id', '') if items else ''
 
           if not root_block_id:
-              print(f"获取根 block 失败: {blocks_data}")
-              exit(1)
+              log(f"获取根 block 失败: {blocks_data}")
+              sys.exit(1)
 
-          print(f"root_block_id: {root_block_id}")
+          log(f"root_block_id: {root_block_id}")
 
-          # 构建文档内容块
           blocks = []
 
           blocks.append({
@@ -183,7 +204,6 @@ jobs:
                       'style': {}
                   }
               })
-              # 限制内容长度避免超时
               content_to_insert = change['content'][:8000] if len(change['content']) > 8000 else change['content']
               blocks.append({
                   'block_type': 12,
@@ -194,29 +214,30 @@ jobs:
               })
               blocks.append({'block_type': 1, 'text': {'elements': [{'type': 'text_run', 'text_run': {'content': ''}}], 'style': {}})
 
-          print(f"准备插入 {len(blocks)} 个 blocks")
+          log(f"准备插入 {len(blocks)} 个 blocks")
 
-          # 插入内容块
           insert_url = f'https://open.feishu.cn/open-apis/docx/v1/documents/{doc_token}/blocks/{root_block_id}/children'
-          print(f"insert_url: {insert_url}")
-
           insert_resp = requests.patch(
               insert_url,
               headers=headers_lark,
               json={'children': blocks, 'index': -1}
           )
 
-          print(f"insert_resp status: {insert_resp.status_code}")
-          print(f"insert_resp text: {insert_resp.text[:1000]}")
+          log(f"insert_resp status: {insert_resp.status_code}, text: {insert_resp.text[:1000]}")
 
-          insert_data = insert_resp.json()
+          try:
+              insert_data = json.loads(insert_resp.text)
+          except json.JSONDecodeError as e:
+              log(f"insert JSON 解析失败: {e}, text: {insert_resp.text}")
+              sys.exit(1)
+
           if insert_data.get('code') != 0:
-              print(f"插入内容失败: {insert_data}")
-              exit(1)
+              log(f"插入内容失败: {insert_data}")
+              sys.exit(1)
 
-          print(f"文档已创建: https://bytedance.feishu.cn/docx/{doc_token}")
-          print(f"FILES_COUNT={len(changes)}")
-          print(f"DOC_TOKEN={doc_token}")
+          log(f"文档已创建: https://bytedance.feishu.cn/docx/{doc_token}")
+          log(f"FILES_COUNT={len(changes)}")
+          log(f"DOC_TOKEN={doc_token}")
           PYEOF
 
       - name: No changes detected

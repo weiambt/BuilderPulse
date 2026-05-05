@@ -43,6 +43,7 @@ jobs:
           python3 << 'PYEOF'
           import os
           import base64
+          import json
           import requests
           from datetime import datetime
 
@@ -91,7 +92,13 @@ jobs:
               'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal',
               json={'app_id': lark_app_id, 'app_secret': lark_app_secret}
           )
-          lark_token = lark_token_resp.json().get('tenant_access_token', '')
+          lark_token_data = lark_token_resp.json()
+          lark_token = lark_token_data.get('tenant_access_token', '')
+
+          if not lark_token:
+              print(f"获取 Lark token 失败: {lark_token_data}")
+              exit(1)
+
           headers_lark = {'Authorization': f'Bearer {lark_token}', 'Content-Type': 'application/json'}
 
           # 创建飞书文档
@@ -101,14 +108,24 @@ jobs:
               headers=headers_lark,
               json={'title': doc_title}
           )
-          doc_data = doc_resp.json()
+
+          # 调试输出
+          print(f"doc_resp status: {doc_resp.status_code}")
+          print(f"doc_resp text: {doc_resp.text[:500]}")
+
+          try:
+              doc_data = doc_resp.json()
+          except:
+              print(f"JSON 解析失败: {doc_resp.text}")
+              exit(1)
+
           doc_token = doc_data.get('data', {}).get('document', {}).get('document_id', '')
 
           if not doc_token:
               print(f"文档创建失败: {doc_data}")
               exit(1)
 
-          # 获取文档的 blocks (找到根 block_id)
+          # 获取文档的 blocks
           blocks_resp = requests.get(
               f'https://open.feishu.cn/open-apis/docx/v1/documents/{doc_token}/blocks',
               headers=headers_lark
@@ -123,7 +140,6 @@ jobs:
           # 构建文档内容块
           blocks = []
 
-          # 标题
           blocks.append({
               'block_type': 2,
               'heading1': {
@@ -132,7 +148,6 @@ jobs:
               }
           })
 
-          # 摘要
           blocks.append({
               'block_type': 1,
               'text': {
@@ -141,7 +156,6 @@ jobs:
               }
           })
 
-          # 文件变更列表标题
           blocks.append({
               'block_type': 3,
               'heading2': {
@@ -150,7 +164,6 @@ jobs:
               }
           })
 
-          # 每个文件详情
           for change in changes:
               blocks.append({
                   'block_type': 4,
@@ -166,24 +179,23 @@ jobs:
                       'style': {}
                   }
               })
-              # 文件完整内容 (不做截断)
               blocks.append({
-                  'block_type': 12,  # code block
+                  'block_type': 12,
                   'code': {
                       'elements': [{'type': 'text_run', 'text_run': {'content': change['content']}}],
-                      'style': {'language': 1}  # 1=plain text
+                      'style': {'language': 1}
                   }
               })
-              blocks.append({'block_type': 1, 'text': {'elements': [{'type': 'text_run', 'text_run': {'content': ''}}], 'style': {}}})
+              blocks.append({'block_type': 1, 'text': {'elements': [{'type': 'text_run', 'text_run': {'content': ''}}], 'style': {}})
 
-          # 插入内容块到文档
+          # 插入内容块
           insert_resp = requests.patch(
               f'https://open.feishu.cn/open-apis/docx/v1/documents/{doc_token}/blocks/{root_block_id}/children',
               headers=headers_lark,
               json={'children': blocks, 'index': -1}
           )
-          insert_data = insert_resp.json()
 
+          insert_data = insert_resp.json()
           if insert_data.get('code') != 0:
               print(f"插入内容失败: {insert_data}")
               exit(1)

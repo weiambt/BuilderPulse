@@ -43,7 +43,6 @@ jobs:
           python3 << 'PYEOF'
           import os
           import base64
-          import json
           import requests
           from datetime import datetime
 
@@ -87,16 +86,17 @@ jobs:
           latest_sha = commits[0]['sha'] if commits else ''
           latest_sha_short = latest_sha[:8]
 
+          print(f"获取到 {len(changes)} 个文件变更")
+
           # 获取 Lark token
           lark_token_resp = requests.post(
               'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal',
               json={'app_id': lark_app_id, 'app_secret': lark_app_secret}
           )
-          lark_token_data = lark_token_resp.json()
-          lark_token = lark_token_data.get('tenant_access_token', '')
+          lark_token = lark_token_resp.json().get('tenant_access_token', '')
 
           if not lark_token:
-              print(f"获取 Lark token 失败: {lark_token_data}")
+              print(f"获取 Lark token 失败: {lark_token_resp.text}")
               exit(1)
 
           headers_lark = {'Authorization': f'Bearer {lark_token}', 'Content-Type': 'application/json'}
@@ -109,14 +109,15 @@ jobs:
               json={'title': doc_title}
           )
 
-          # 调试输出
           print(f"doc_resp status: {doc_resp.status_code}")
-          print(f"doc_resp text: {doc_resp.text[:500]}")
+          print(f"doc_resp text: {doc_resp.text[:1000]}")
 
+          # 尝试解析 JSON
           try:
               doc_data = doc_resp.json()
-          except:
-              print(f"JSON 解析失败: {doc_resp.text}")
+          except Exception as e:
+              print(f"JSON 解析失败: {e}")
+              print(f"response text: {doc_resp.text}")
               exit(1)
 
           doc_token = doc_data.get('data', {}).get('document', {}).get('document_id', '')
@@ -182,7 +183,7 @@ jobs:
               blocks.append({
                   'block_type': 12,
                   'code': {
-                      'elements': [{'type': 'text_run', 'text_run': {'content': change['content']}}],
+                      'elements': [{'type': 'text_run', 'text_run': {'content': change['content'][:10000]}}],
                       'style': {'language': 1}
                   }
               })

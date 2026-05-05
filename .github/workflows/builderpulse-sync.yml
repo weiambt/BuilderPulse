@@ -34,9 +34,7 @@ jobs:
       - name: Sync to Lark
         if: steps.last_commit.outputs.last != steps.latest_commit.outputs.sha
         env:
-          LAST_COMMIT: ${{ steps.last_commit.outputs.last }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          LARK_WEBHOOK: ${{ secrets.LARK_WEBHOOK }}
           LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
           LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
         run: |
@@ -49,7 +47,6 @@ jobs:
           from datetime import datetime
 
           github_token = os.environ.get('GITHUB_TOKEN', '')
-          lark_webhook = os.environ.get('LARK_WEBHOOK', '')
           lark_app_id = os.environ.get('LARK_APP_ID', '')
           lark_app_secret = os.environ.get('LARK_APP_SECRET', '')
 
@@ -127,34 +124,12 @@ jobs:
                   json={'content': elements}
               )
 
-              # 发送群消息
-              message = {
-                  'msg_type': 'interactive',
-                  'card': {
-                      'header': {
-                          'title': 'BuilderPulse 仓库变更通知',
-                          'style': 1
-                      },
-                      'elements': [
-                          {'tag': 'div', 'text': {'content': f'**检测到 BuilderPulse 仓库发生变更！**\n\n变更文件数: {len(changes)}\n最新 Commit: `{latest_sha_short}`', 'type': 'lark_md'}},
-                          {'tag': 'hr'},
-                          {'tag': 'action', 'actions': [
-                              {'tag': 'link', 'text': '查看文档', 'url': f'https://bytedance.feishu.cn/docx/{doc_token}'}
-                          ]}
-                      ]
-                  }
-              }
-              requests.post(lark_webhook, json=message)
-
-          print(f"FILES_COUNT={len(changes)}")
-          print(f"DOC_TOKEN={doc_token}")
+              print(f"文档已创建: https://bytedance.feishu.cn/docx/{doc_token}")
+              print(f"FILES_COUNT={len(changes)}")
+              print(f"DOC_TOKEN={doc_token}")
+          else:
+              print(f"文档创建失败: {doc_data}")
           PYEOF
-
-      - name: Update stored commit SHA
-        if: steps.last_commit.outputs.last != steps.latest_commit.outputs.sha
-        run: |
-          echo "Updating stored commit SHA to ${{ steps.latest_commit.outputs.sha }}"
-          # Note: In production, use GitHub API to update the secret
 
       - name: No changes detected
         if: steps.last_commit.outputs.last == steps.latest_commit.outputs.sha
